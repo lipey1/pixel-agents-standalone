@@ -22,6 +22,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || "3456", 10);
 const IDLE_SHUTDOWN_MS = 600_000; // 10 minutes
 
+// When another process owns this server's lifetime (for example the OpenCode
+// Desktop GUI plugin), exit as soon as that process disappears. This keeps a
+// force-killed OpenCode from leaving an orphan Pixel Agents server behind.
+const PARENT_PID = Number.parseInt(process.env.PIXEL_AGENTS_PARENT_PID || "", 10);
+if (Number.isFinite(PARENT_PID) && PARENT_PID > 0) {
+  const parentWatchdog = setInterval(() => {
+    try {
+      process.kill(PARENT_PID, 0);
+    } catch {
+      console.log(`[Server] Parent process ${PARENT_PID} is gone, shutting down...`);
+      process.exit(0);
+    }
+  }, 5_000);
+  parentWatchdog.unref();
+}
+
 // ── Source selection ────────────────────────────────────────────────────────
 // OpenCode is the default. Set PIXEL_AGENTS_SOURCE=claude to use the legacy
 // Claude Code JSONL watcher instead.
@@ -419,8 +435,10 @@ server.listen(PORT, () => {
   }
 });
 
-// Idle shutdown
+// Idle shutdown. A parent-managed server stays alive while OpenCode is open,
+// even with no sessions or browser tabs connected.
 setInterval(() => {
+  if (Number.isFinite(PARENT_PID) && PARENT_PID > 0) return;
   const agentCount = listUiAgents().length;
   if (agentCount === 0 && clients.size === 0 && Date.now() - lastActivityTime > IDLE_SHUTDOWN_MS) {
     console.log("No active sessions or clients for 10 minutes, shutting down...");

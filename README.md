@@ -60,6 +60,17 @@ OPENCODE_URL=http://127.0.0.1:28894 OPENCODE_PASSWORD=your-password npm start
 
 The status badge in the bottom toolbar shows whether OpenCode is connected, which API version is in use, and how many agents are visible.
 
+### Start and stop with OpenCode Desktop
+
+The [`integrations/opencode-plugin`](integrations/opencode-plugin) folder contains an OpenCode Desktop GUI plugin that ties Pixel Agents to the app lifecycle: Pixel Agents starts when OpenCode starts, opens in the browser, and stops when OpenCode quits, reloads, or disables the plugin. A parent-PID watchdog also stops the server if OpenCode is force-killed.
+
+```powershell
+npm run build
+powershell -ExecutionPolicy Bypass -File integrations\opencode-plugin\install.ps1
+```
+
+Then add the printed entry to the `plugins` array in `~/.config/opencode/opencode.jsonc` and restart OpenCode Desktop. See the [plugin README](integrations/opencode-plugin/README.md) for options and logs (or use `start-pixel-agents.cmd` for a manual launch on Windows).
+
 ### Server discovery order
 
 1. `OPENCODE_URL` / `OPENCODE_SERVER_URL`, when set.
