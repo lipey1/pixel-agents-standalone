@@ -14,14 +14,39 @@ import {
   loadFurnitureAssets,
   loadDefaultLayout,
 } from "./assetLoader.js";
-import type { TrackedAgent, ServerMessage } from "./types.js";
+import { OpenCodeSource } from "./opencode/source.js";
+import type { OpenCodeDiscoveryMode } from "./opencode/types.js";
+import type { ServerMessage, TrackedAgent } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || "3456", 10);
 const IDLE_SHUTDOWN_MS = 600_000; // 10 minutes
 
-// State
-const agents = new Map<string, TrackedAgent>(); // sessionId -> agent
+// ── Source selection ────────────────────────────────────────────────────────
+// OpenCode is the default. Set PIXEL_AGENTS_SOURCE=claude to use the legacy
+// Claude Code JSONL watcher instead.
+const SOURCE_KIND = (process.env.PIXEL_AGENTS_SOURCE || "opencode").trim().toLowerCase();
+const IS_OPENCODE = SOURCE_KIND !== "claude" && SOURCE_KIND !== "claude-code" && SOURCE_KIND !== "jsonl";
+
+function parseDiscoveryMode(value: string | undefined): OpenCodeDiscoveryMode {
+  const normalized = (value || "recent").trim().toLowerCase();
+  if (normalized === "all" || normalized === "1" || normalized === "true") return "all";
+  if (normalized === "off" || normalized === "0" || normalized === "false" || normalized === "none") return "off";
+  return "recent";
+}
+
+const PROJECT_DIR =
+  process.env.PIXEL_AGENTS_PROJECT_DIR ||
+  process.env.OPENCODE_DIRECTORY ||
+  process.cwd();
+const DISCOVERY_MODE = parseDiscoveryMode(process.env.PIXEL_AGENTS_DISCOVERY);
+const DISCOVERY_WINDOW_MINUTES = Number.parseInt(process.env.PIXEL_AGENTS_DISCOVERY_WINDOW_MINUTES || "1440", 10);
+const AUTO_ATTACH = process.env.PIXEL_AGENTS_ATTACH !== "0";
+const AUTO_START_SERVER = process.env.PIXEL_AGENTS_OPENCODE_AUTOSTART !== "0";
+
+// State for the legacy Claude watcher source
+const claudeAgents = new Map<string, TrackedAgent>(); // sessionId -> agent
+const hiddenClaudeSessionIds = new Set<string>();
 let nextAgentId = 1;
 const clients = new Set<WebSocket>();
 let lastActivityTime = Date.now();
@@ -40,8 +65,8 @@ const wallTiles = loadWallTiles(assetsRoot);
 const floorTiles = loadFloorTiles(assetsRoot);
 const furnitureAssets = loadFurnitureAssets(assetsRoot);
 
-// Persistence directory
-const persistDir = join(homedir(), ".pixel-agents");
+// Persistence directory (override is useful for tests and profiles)
+const persistDir = process.env.PIXEL_AGENTS_PERSIST_DIR || join(homedir(), ".pixel-agents");
 const persistedLayoutPath = join(persistDir, "layout.json");
 const persistedSeatsPath = join(persistDir, "agent-seats.json");
 
@@ -77,6 +102,7 @@ const persistedSeats = loadPersistedSeats();
 
 // Express app
 const app = express();
+app.use(express.json());
 // Serve production build
 app.use(express.static(join(__dirname, "public")));
 
@@ -104,6 +130,43 @@ function broadcast(msg: ServerMessage): void {
   for (const client of clients) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(data);
+    }
+  }
+}
+
+interface UiAgentInfo {
+  id: number;
+  sessionId: string;
+  projectName: string;
+  projectDir: string;
+}
+
+function listUiAgents(): UiAgentInfo[] {
+  if (openCodeSource) {
+    return openCodeSource.getAgents().map((agent) => ({
+      id: agent.id,
+      sessionId: agent.sessionId,
+      projectName: agent.projectName,
+      projectDir: agent.projectDir,
+    }));
+  }
+  return [...claudeAgents.values()]
+    .map((agent) => ({
+      id: agent.id,
+      sessionId: agent.sessionId,
+      projectName: agent.projectName,
+      projectDir: agent.projectDir,
+    }))
+    .sort((a, b) => a.id - b.id);
+}
+
+function sendClaudeAgentState(ws: WebSocket): void {
+  for (const agent of claudeAgents.values()) {
+    for (const tool of agent.activeTools.values()) {
+      ws.send(JSON.stringify({ type: "agentToolStart", id: agent.id, toolId: tool.toolId, status: tool.status }));
+    }
+    if (agent.isWaiting) {
+      ws.send(JSON.stringify({ type: "agentStatus", id: agent.id, status: "waiting" }));
     }
   }
 }
@@ -138,8 +201,24 @@ function sendInitialData(ws: WebSocket): void {
     );
   }
 
+  if (openCodeSource) {
+    ws.send(JSON.stringify({ type: "workspaceFolders", folders: openCodeSource.getWorkspaceFolders() }));
+    ws.send(JSON.stringify({ type: "sourceStatus", ...openCodeSource.getStatus() }));
+  } else {
+    ws.send(
+      JSON.stringify({
+        type: "sourceStatus",
+        source: "claude",
+        connected: true,
+        serverUrl: null,
+        message: "Claude Code (JSONL watcher)",
+        agentCount: claudeAgents.size,
+      }),
+    );
+  }
+
   // Send existing agents with persisted seat metadata
-  const agentList = Array.from(agents.values());
+  const agentList = listUiAgents();
   const agentIds = agentList.map((a) => a.id);
   const folderNames: Record<number, string> = {};
   const agentMeta: Record<number, { palette?: number; hueShift?: number; seatId?: string }> = {};
@@ -159,16 +238,68 @@ function sendInitialData(ws: WebSocket): void {
     // Send null layout to trigger default layout creation in the UI
     ws.send(JSON.stringify({ type: "layoutLoaded", layout: null, version: 0 }));
   }
+
+  // Re-send active tool state after the layout so the office has characters/seats.
+  if (openCodeSource) {
+    openCodeSource.sendAgentState((message) => ws.send(JSON.stringify(message)));
+  } else {
+    sendClaudeAgentState(ws);
+  }
 }
+
+function findClaudeAgent(agentId: number): TrackedAgent | undefined {
+  for (const agent of claudeAgents.values()) {
+    if (agent.id === agentId) return agent;
+  }
+  return undefined;
+}
+
+function closeClaudeAgent(agentId: number): void {
+  const agent = findClaudeAgent(agentId);
+  if (!agent) return;
+  hiddenClaudeSessionIds.add(agent.sessionId);
+  claudeAgents.delete(agent.sessionId);
+  broadcast({ type: "agentClosed", id: agent.id });
+  console.log(`Agent ${agent.id} hidden: ${agent.projectName}`);
+}
+
+const openCodeSource: OpenCodeSource | null = IS_OPENCODE
+  ? new OpenCodeSource({
+      persistDir,
+      directory: PROJECT_DIR,
+      directoryExplicit: Boolean(process.env.PIXEL_AGENTS_PROJECT_DIR || process.env.OPENCODE_DIRECTORY),
+      discovery: DISCOVERY_MODE,
+      discoveryWindowMs:
+        (Number.isFinite(DISCOVERY_WINDOW_MINUTES) ? DISCOVERY_WINDOW_MINUTES : 1440) * 60 * 1_000,
+      autoAttach: AUTO_ATTACH,
+      autoStartServer: AUTO_START_SERVER,
+      broadcast,
+      log: (message) => console.log(`[OpenCode] ${message}`),
+    })
+  : null;
+
+// REST status endpoint for diagnostics and scripts
+app.get("/api/status", (_req, res) => {
+  res.json({
+    ok: true,
+    source: IS_OPENCODE ? "opencode" : "claude",
+    projectDir: PROJECT_DIR,
+    persistDir,
+    agents: listUiAgents(),
+    opencode: openCodeSource?.getStatus() ?? null,
+  });
+});
 
 wss.on("connection", (ws) => {
   (ws as unknown as Record<string, boolean>).__isAlive = true;
-  ws.on("pong", () => { (ws as unknown as Record<string, boolean>).__isAlive = true; });
+  ws.on("pong", () => {
+    (ws as unknown as Record<string, boolean>).__isAlive = true;
+  });
   clients.add(ws);
 
   ws.on("message", (raw) => {
     try {
-      const msg = JSON.parse(raw.toString());
+      const msg = JSON.parse(raw.toString()) as { type?: string; [key: string]: unknown };
       if (msg.type === "webviewReady" || msg.type === "ready") {
         sendInitialData(ws);
       } else if (msg.type === "saveLayout") {
@@ -193,6 +324,30 @@ wss.on("connection", (ws) => {
         } catch (err) {
           console.error(`[Server] Failed to save agent seats: ${err instanceof Error ? err.message : err}`);
         }
+      } else if (msg.type === "openAgentSession" || msg.type === "openClaude") {
+        if (openCodeSource) {
+          void openCodeSource.createAgent(typeof msg.folderPath === "string" ? msg.folderPath : undefined);
+        } else {
+          broadcast({
+            type: "notice",
+            level: "warn",
+            message: "Claude Code mode only observes existing sessions. Restart with PIXEL_AGENTS_SOURCE=opencode to create agents.",
+          });
+        }
+      } else if (msg.type === "closeAgent") {
+        const id = typeof msg.id === "number" ? msg.id : Number.parseInt(String(msg.id), 10);
+        if (!Number.isFinite(id)) return;
+        if (openCodeSource) {
+          openCodeSource.closeAgent(id);
+        } else {
+          closeClaudeAgent(id);
+        }
+      } else if (msg.type === "focusAgent") {
+        const id = typeof msg.id === "number" ? msg.id : Number.parseInt(String(msg.id), 10);
+        if (!Number.isFinite(id)) return;
+        openCodeSource?.focusAgent(id);
+      } else if (msg.type === "openSessionsFolder") {
+        broadcast({ type: "notice", level: "info", message: `Local data: ${persistDir}` });
       }
     } catch {
       /* ignore invalid messages */
@@ -202,74 +357,87 @@ wss.on("connection", (ws) => {
   ws.on("close", () => clients.delete(ws));
 });
 
-// Watcher
-const watcher = new JsonlWatcher();
+// ── Legacy Claude JSONL watcher ────────────────────────────────────────────
+const watcher = !IS_OPENCODE ? new JsonlWatcher() : null;
 
-watcher.on("fileAdded", (file: WatchedFile) => {
-  if (agents.has(file.sessionId)) return;
-  lastActivityTime = Date.now();
+if (watcher) {
+  watcher.on("fileAdded", (file: WatchedFile) => {
+    if (claudeAgents.has(file.sessionId) || hiddenClaudeSessionIds.has(file.sessionId)) return;
+    lastActivityTime = Date.now();
 
-  const agent: TrackedAgent = {
-    id: nextAgentId++,
-    sessionId: file.sessionId,
-    projectDir: dirname(file.path),
-    projectName: file.projectName,
-    jsonlFile: file.path,
-    fileOffset: 0,
-    lineBuffer: "",
-    activity: "idle",
-    activeTools: new Map(),
-    activeToolNames: new Map(),
-    activeSubagentToolIds: new Map(),
-    activeSubagentToolNames: new Map(),
-    isWaiting: false,
-    permissionSent: false,
-    hadToolsInTurn: false,
-    lastActivityTime: Date.now(),
-  };
+    const agent: TrackedAgent = {
+      id: nextAgentId++,
+      sessionId: file.sessionId,
+      projectDir: dirname(file.path),
+      projectName: file.projectName,
+      jsonlFile: file.path,
+      fileOffset: 0,
+      lineBuffer: "",
+      activity: "idle",
+      activeTools: new Map(),
+      activeToolNames: new Map(),
+      activeSubagentToolIds: new Map(),
+      activeSubagentToolNames: new Map(),
+      isWaiting: false,
+      permissionSent: false,
+      hadToolsInTurn: false,
+      lastActivityTime: Date.now(),
+    };
 
-  agents.set(file.sessionId, agent);
-  broadcast({ type: "agentCreated", id: agent.id, folderName: agent.projectName });
-  console.log(`Agent ${agent.id} joined: ${agent.projectName} (${file.sessionId.slice(0, 8)})`);
-});
+    claudeAgents.set(file.sessionId, agent);
+    broadcast({ type: "agentCreated", id: agent.id, folderName: agent.projectName });
+    console.log(`Agent ${agent.id} joined: ${agent.projectName} (${file.sessionId.slice(0, 8)})`);
+  });
 
-watcher.on("fileRemoved", (file: WatchedFile) => {
-  const agent = agents.get(file.sessionId);
-  if (!agent) return;
+  watcher.on("fileRemoved", (file: WatchedFile) => {
+    const agent = claudeAgents.get(file.sessionId);
+    if (!agent) return;
 
-  agents.delete(file.sessionId);
-  broadcast({ type: "agentClosed", id: agent.id });
-  console.log(`Agent ${agent.id} left: ${agent.projectName}`);
-});
+    claudeAgents.delete(file.sessionId);
+    broadcast({ type: "agentClosed", id: agent.id });
+    console.log(`Agent ${agent.id} left: ${agent.projectName}`);
+  });
 
-watcher.on("line", (file: WatchedFile, line: string) => {
-  const agent = agents.get(file.sessionId);
-  if (!agent) return;
-  lastActivityTime = Date.now();
+  watcher.on("line", (file: WatchedFile, line: string) => {
+    const agent = claudeAgents.get(file.sessionId);
+    if (!agent) return;
+    lastActivityTime = Date.now();
 
-  processTranscriptLine(line, agent, broadcast);
-});
+    processTranscriptLine(line, agent, broadcast);
+  });
+}
 
 // Start
-watcher.start();
 server.listen(PORT, () => {
   console.log(`Pixel Agents server running at http://localhost:${PORT}`);
-  console.log(`Watching ~/.claude/projects/ for active sessions...`);
+  if (openCodeSource) {
+    console.log(`Source: OpenCode (discovery=${DISCOVERY_MODE}, project=${PROJECT_DIR})`);
+    openCodeSource.start();
+  } else {
+    console.log(`Source: Claude Code (watching ~/.claude/projects/)`);
+    watcher?.start();
+  }
 });
 
 // Idle shutdown
 setInterval(() => {
-  if (agents.size === 0 && clients.size === 0 && Date.now() - lastActivityTime > IDLE_SHUTDOWN_MS) {
+  const agentCount = listUiAgents().length;
+  if (agentCount === 0 && clients.size === 0 && Date.now() - lastActivityTime > IDLE_SHUTDOWN_MS) {
     console.log("No active sessions or clients for 10 minutes, shutting down...");
-    watcher.stop();
+    openCodeSource?.stop();
+    watcher?.stop();
     server.close();
     process.exit(0);
   }
 }, 30_000);
 
 // Graceful shutdown
-process.on("SIGINT", () => {
-  watcher.stop();
+function shutdown(): void {
+  openCodeSource?.stop();
+  watcher?.stop();
   server.close();
   process.exit(0);
-});
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

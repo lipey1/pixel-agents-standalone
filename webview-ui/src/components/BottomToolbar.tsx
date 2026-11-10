@@ -1,15 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { SettingsModal } from './SettingsModal.js'
-import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js'
+import type { SourceStatus, WorkspaceFolder } from '../hooks/useExtensionMessages.js'
 import { vscode } from '../vscodeApi.js'
 
 interface BottomToolbarProps {
   isEditMode: boolean
-  onOpenClaude: () => void
+  onOpenAgent: () => void
   onToggleEditMode: () => void
   isDebugMode: boolean
   onToggleDebugMode: () => void
   workspaceFolders: WorkspaceFolder[]
+  sourceStatus: SourceStatus | null
 }
 
 const panelStyle: React.CSSProperties = {
@@ -46,11 +47,12 @@ const btnActive: React.CSSProperties = {
 
 export function BottomToolbar({
   isEditMode,
-  onOpenClaude,
+  onOpenAgent,
   onToggleEditMode,
   isDebugMode,
   onToggleDebugMode,
   workspaceFolders,
+  sourceStatus,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -76,13 +78,13 @@ export function BottomToolbar({
     if (hasMultipleFolders) {
       setIsFolderPickerOpen((v) => !v)
     } else {
-      onOpenClaude()
+      onOpenAgent()
     }
   }
 
   const handleFolderSelect = (folder: WorkspaceFolder) => {
     setIsFolderPickerOpen(false)
-    vscode.postMessage({ type: 'openClaude', folderPath: folder.path })
+    vscode.postMessage({ type: 'openAgentSession', folderPath: folder.path })
   }
 
   return (
@@ -146,6 +148,35 @@ export function BottomToolbar({
           </div>
         )}
       </div>
+      {sourceStatus && (
+        <span
+          title={sourceStatus.message}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '2px 6px',
+            fontSize: '18px',
+            color: 'var(--pixel-text-dim)',
+            border: '1px solid var(--pixel-border)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: sourceStatus.connected ? '#5ac47a' : '#d05a5a',
+              flexShrink: 0,
+            }}
+          />
+          {sourceStatus.source === 'opencode'
+            ? `OpenCode${sourceStatus.apiVersion ? ` ${sourceStatus.apiVersion}` : ''}`
+            : 'Claude'}
+          {sourceStatus.connected ? ` · ${sourceStatus.agentCount}` : ' · offline'}
+        </span>
+      )}
       <button
         onClick={onToggleEditMode}
         onMouseEnter={() => setHovered('edit')}

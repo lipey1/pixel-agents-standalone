@@ -44,6 +44,19 @@ export type ServerMessage =
   | { type: "subagentToolDone"; id: number; parentToolId: string; toolId: string }
   | { type: "subagentToolPermission"; id: number; parentToolId: string }
   | { type: "subagentClear"; id: number; parentToolId: string }
+  | {
+      type: "sourceStatus";
+      source: string;
+      connected: boolean;
+      serverUrl: string | null;
+      message: string;
+      agentCount: number;
+      discovery?: string;
+      autoStartedServer?: boolean;
+      apiVersion?: string;
+    }
+  | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+  | { type: "workspaceFolders"; folders: Array<{ name: string; path: string }> }
   | { type: "characterSpritesLoaded"; characters: unknown[] }
   | { type: "floorTilesLoaded"; sprites: unknown[] }
   | { type: "wallTilesLoaded"; sprites: unknown[] }
@@ -56,4 +69,12 @@ export type ClientMessage =
   | { type: "ready" }
   | { type: "webviewReady" }
   | { type: "saveLayout"; layout: unknown }
-  | { type: "saveAgentSeats"; seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> };
+  | { type: "saveAgentSeats"; seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> }
+  | { type: "openAgentSession"; folderPath?: string }
+  | { type: "openClaude"; folderPath?: string }
+  | { type: "closeAgent"; id: number }
+  | { type: "focusAgent"; id: number }
+  | { type: "openSessionsFolder" }
+  | { type: "setSoundEnabled"; enabled: boolean }
+  | { type: "exportLayout" }
+  | { type: "importLayout" };

@@ -40,6 +40,21 @@ export interface WorkspaceFolder {
   path: string
 }
 
+export interface SourceStatus {
+  source: string
+  connected: boolean
+  serverUrl: string | null
+  message: string
+  agentCount: number
+  apiVersion?: string
+}
+
+export interface Notice {
+  id: number
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
 export interface ExtensionMessageState {
   agents: number[]
   selectedAgent: number | null
@@ -50,6 +65,8 @@ export interface ExtensionMessageState {
   layoutReady: boolean
   loadedAssets?: { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> }
   workspaceFolders: WorkspaceFolder[]
+  sourceStatus: SourceStatus | null
+  notices: Notice[]
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -75,13 +92,22 @@ export function useExtensionMessages(
   const [layoutReady, setLayoutReady] = useState(false)
   const [loadedAssets, setLoadedAssets] = useState<{ catalog: FurnitureAsset[]; sprites: Record<string, string[][]> } | undefined>()
   const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceFolder[]>([])
+  const [sourceStatus, setSourceStatus] = useState<SourceStatus | null>(null)
+  const [notices, setNotices] = useState<Notice[]>([])
+  const noticeIdRef = useRef(0)
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false)
 
   useEffect(() => {
-    // Buffer agents from existingAgents until layout is loaded
+    // Buffer agents from existingAgents/agentCreated until layout is loaded
     let pendingAgents: Array<{ id: number; palette?: number; hueShift?: number; seatId?: string; folderName?: string }> = []
+
+    const queuePendingAgent = (entry: { id: number; palette?: number; hueShift?: number; seatId?: string; folderName?: string }) => {
+      if (!pendingAgents.some((p) => p.id === entry.id)) {
+        pendingAgents.push(entry)
+      }
+    }
 
     const handler = (e: MessageEvent) => {
       const msg = e.data
@@ -117,10 +143,15 @@ export function useExtensionMessages(
         const folderName = msg.folderName as string | undefined
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
         setSelectedAgent(id)
-        os.addAgent(id, undefined, undefined, undefined, undefined, folderName)
-        saveAgentSeats(os)
+        if (layoutReadyRef.current) {
+          os.addAgent(id, undefined, undefined, undefined, undefined, folderName)
+          saveAgentSeats(os)
+        } else {
+          queuePendingAgent({ id, folderName })
+        }
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number
+        pendingAgents = pendingAgents.filter((p) => p.id !== id)
         setAgents((prev) => prev.filter((a) => a !== id))
         setSelectedAgent((prev) => (prev === id ? null : prev))
         setAgentTools((prev) => {
@@ -152,7 +183,7 @@ export function useExtensionMessages(
         // Buffer agents — they'll be added in layoutLoaded after seats are built
         for (const id of incoming) {
           const m = meta[id]
-          pendingAgents.push({ id, palette: m?.palette, hueShift: m?.hueShift, seatId: m?.seatId, folderName: folderNames[id] })
+          queuePendingAgent({ id, palette: m?.palette, hueShift: m?.hueShift, seatId: m?.seatId, folderName: folderNames[id] })
         }
         setAgents((prev) => {
           const ids = new Set(prev)
@@ -339,6 +370,21 @@ export function useExtensionMessages(
       } else if (msg.type === 'workspaceFolders') {
         const folders = msg.folders as WorkspaceFolder[]
         setWorkspaceFolders(folders)
+      } else if (msg.type === 'sourceStatus') {
+        setSourceStatus({
+          source: msg.source as string,
+          connected: msg.connected as boolean,
+          serverUrl: (msg.serverUrl as string | null) ?? null,
+          message: msg.message as string,
+          agentCount: (msg.agentCount as number) ?? 0,
+        })
+      } else if (msg.type === 'notice') {
+        const notice: Notice = {
+          id: ++noticeIdRef.current,
+          level: (msg.level as Notice['level']) || 'info',
+          message: msg.message as string,
+        }
+        setNotices((prev) => [...prev.slice(-2), notice])
       } else if (msg.type === 'settingsLoaded') {
         const soundOn = msg.soundEnabled as boolean
         setSoundEnabled(soundOn)
@@ -360,5 +406,5 @@ export function useExtensionMessages(
     return () => window.removeEventListener('message', handler)
   }, [getOfficeState])
 
-  return { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders }
+  return { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders, sourceStatus, notices }
 }
