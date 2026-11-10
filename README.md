@@ -62,14 +62,22 @@ The status badge in the bottom toolbar shows whether OpenCode is connected, whic
 
 ### Start and stop with OpenCode Desktop
 
-The [`integrations/opencode-plugin`](integrations/opencode-plugin) folder contains an OpenCode Desktop GUI plugin that ties Pixel Agents to the app lifecycle: Pixel Agents starts when OpenCode starts, opens in the browser, and stops when OpenCode quits, reloads, or disables the plugin. A parent-PID watchdog also stops the server if OpenCode is force-killed.
+Install the plugin directly from npm:
+
+```bash
+opencode plugin add pixel-agents-standalone
+```
+
+The package includes the web server and UI, so no checkout is needed. Restart OpenCode Desktop; Pixel Agents starts with the app, opens in your browser, and stops when OpenCode quits, reloads, or disables the plugin. Options such as `port` and `openBrowser` can be set with an `opencode.jsonc` plugin entry. See the [plugin README](integrations/opencode-plugin/README.md).
+
+For a development checkout, you can instead install the GUI plugin locally:
 
 ```powershell
 npm run build
 powershell -ExecutionPolicy Bypass -File integrations\opencode-plugin\install.ps1
 ```
 
-Then add the printed entry to the `plugins` array in `~/.config/opencode/opencode.jsonc` and restart OpenCode Desktop. See the [plugin README](integrations/opencode-plugin/README.md) for options and logs (or use `start-pixel-agents.cmd` for a manual launch on Windows).
+Then add the printed entry to the `plugins` array in `~/.config/opencode/opencode.jsonc` and restart OpenCode Desktop. Or use `start-pixel-agents.cmd` for a manual launch on Windows.
 
 ### Server discovery order
 

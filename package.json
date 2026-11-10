@@ -1,8 +1,40 @@
 {
   "name": "pixel-agents-standalone",
   "version": "0.1.0",
-  "private": true,
+  "description": "Pixel-art office that visualizes OpenCode sessions and subagents in real time, with an OpenCode Desktop lifecycle plugin.",
   "type": "module",
+  "license": "MIT",
+  "author": "lipey1",
+  "homepage": "https://github.com/lipey1/pixel-agents-standalone",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lipey1/pixel-agents-standalone.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lipey1/pixel-agents-standalone/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "pixel-art",
+    "agents",
+    "subagents",
+    "desktop",
+    "visualization"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./server/plugin.ts",
+    "./gui-experimental": "./integrations/opencode-plugin/gui-experimental.cjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "server/plugin.ts",
+    "integrations/opencode-plugin/gui-experimental.cjs"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:ui\"",
     "dev:server": "tsx watch server/index.ts",
@@ -10,6 +42,7 @@
     "build": "npm run build:server && npm run build:ui",
     "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:chokidar --external:ws --external:express --external:pngjs",
     "build:ui": "cd webview-ui && npx vite build --outDir ../dist/public",
+    "prepack": "npm run build",
     "start": "node dist/server.js",
     "mock-opencode": "tsx scripts/mock-opencode-server.ts",
     "mock-opencode:v2": "tsx scripts/mock-opencode-v2-server.ts",
@@ -19,6 +52,7 @@
     "extract-furniture": "tsx scripts/extract-furniture.ts"
   },
   "dependencies": {
+    "@opencode/plugin": "^2.2.7",
     "chokidar": "^4.0.0",
     "express": "^5.0.0",
     "pngjs": "^7.0.0",

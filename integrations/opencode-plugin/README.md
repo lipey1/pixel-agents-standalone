@@ -14,6 +14,34 @@ gone within ~5 seconds and exits by itself.
 
 ## Install
 
+### From npm (recommended)
+
+```bash
+opencode plugin add pixel-agents-standalone
+```
+
+The npm package contains the prebuilt server, the web UI, and this GUI plugin, so
+no checkout or build step is needed. Restart OpenCode Desktop afterwards.
+
+To customize options, replace the plain package entry with an object in your
+global `opencode.jsonc`:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "pixel-agents-standalone",
+      "options": {
+        "port": 3456,
+        "openBrowser": true
+      }
+    }
+  ]
+}
+```
+
+### From this checkout
+
 1. Build Pixel Agents once:
 
    ```powershell
@@ -29,8 +57,7 @@ gone within ~5 seconds and exits by itself.
    The helper copies `index.ts` and `gui-experimental.cjs` to
    `%USERPROFILE%\.config\opencode\plugins\pixel-agents`.
 
-3. Add the plugin to `~/.config/opencode/opencode.jsonc`. Keep any plugins you
-   already have and add this entry to the array:
+3. Add the plugin to `~/.config/opencode/opencode.jsonc`:
 
    ```jsonc
    {
@@ -40,16 +67,14 @@ gone within ~5 seconds and exits by itself.
          "options": {
            "repo": "C:\\Users\\YOU\\pixel-agents-standalone",
            "port": 3456,
-           "openBrowser": true,
-           "nodePath": "C:\\Program Files\\nodejs\\node.exe"
+           "openBrowser": true
          }
        }
      ]
    }
    ```
 
-   `repo` is the only required option. `nodePath` is optional when `node` is in
-   `PATH`; the plugin also knows the common Windows install and nvm locations.
+   `repo` points at the checkout containing `dist/server.js`.
 
 4. Restart OpenCode Desktop. Pixel Agents should start on its own and open
    `http://localhost:3456`.
@@ -58,11 +83,12 @@ gone within ~5 seconds and exits by itself.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `repo` | `~/pixel-agents-standalone` | Pixel Agents checkout containing `dist/server.js` |
+| `repo` | package / checkout | Directory containing `dist/server.js`. Optional for npm installs |
+| `projectDir` | `repo` or home | Working directory used by `+ Agent` and workspace metadata. Set it to the project where new sessions should start |
 | `port` | `3456` | Port for the Pixel Agents web server |
 | `openBrowser` | `true` | Open the app in the default browser when ready |
 | `discovery` | `recent` | Passed to `PIXEL_AGENTS_DISCOVERY` (`recent`, `all`, `off`) |
-| `nodePath` | auto | Node.js executable used to run `dist/server.js` |
+| `nodePath` | auto | Node.js executable. Falls back to OpenCode's Electron runtime (`ELECTRON_RUN_AS_NODE`) when Node is not installed |
 
 ## Logs
 

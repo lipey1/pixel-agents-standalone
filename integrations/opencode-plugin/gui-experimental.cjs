@@ -39,7 +39,25 @@ function makeLogger(dir) {
   }
 }
 
-function resolveNode(options) {
+function resolveRepo(options) {
+  if (options.repo) return String(options.repo)
+  const candidates = [
+    join(__dirname, "..", ".."), // npm package: integrations/opencode-plugin/
+    join(__dirname, ".."), // plugin directory containing dist/
+    __dirname, // package root containing dist/
+    join(homedir(), "pixel-agents-standalone"),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(join(candidate, "dist", "server.js"))) return candidate
+    } catch {
+      /* ignore */
+    }
+  }
+  return join(homedir(), "pixel-agents-standalone")
+}
+
+function resolveLaunch(options) {
   const candidates = [
     options.nodePath,
     process.env.PIXEL_AGENTS_NODE,
@@ -52,12 +70,18 @@ function resolveNode(options) {
   for (const candidate of candidates) {
     if (typeof candidate !== "string" || !candidate) continue
     try {
-      if (existsSync(candidate)) return candidate
+      if (existsSync(candidate)) return { command: candidate, env: {} }
     } catch {
       /* ignore */
     }
   }
-  return process.platform === "win32" ? "node.exe" : "node"
+  // OpenCode Desktop ships Electron. Running its executable with
+  // ELECTRON_RUN_AS_NODE gives us a Node runtime even when Node.js is not
+  // installed on the machine.
+  if (process.versions.electron && process.execPath) {
+    return { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } }
+  }
+  return { command: process.platform === "win32" ? "node.exe" : "node", env: {} }
 }
 
 function checkHealth(url) {
@@ -112,13 +136,17 @@ function openInBrowser(url, log) {
 module.exports = Plugin.define({
   async main(ctx) {
     const options = { ...DEFAULTS, ...(ctx.options || {}) }
-    const repo = String(options.repo)
+    const repo = resolveRepo(options)
+    // The server uses its cwd for + Agent and workspace metadata. For an npm
+    // install the package lives in node_modules, so default to the user's home
+    // instead of creating sessions inside the package directory.
+    const projectDir = String(options.projectDir || (options.repo ? repo : homedir()))
     const port = Number(options.port) || DEFAULTS.port
     const url = `http://127.0.0.1:${port}`
     const logDir = join(process.env.LOCALAPPDATA || process.env.TEMP || repo, "PixelAgents")
     const log = makeLogger(logDir)
 
-    log(`main started plugin=${ctx.id} electronPid=${process.pid} repo=${repo} port=${port}`)
+    log(`main started plugin=${ctx.id} electronPid=${process.pid} repo=${repo} port=${port} project=${projectDir}`)
 
     let child = null
     let stopping = false
@@ -189,16 +217,18 @@ module.exports = Plugin.define({
       return
     }
 
-    const node = resolveNode(options)
+    const launch = resolveLaunch(options)
     const serverLog = join(logDir, "server.log")
     let out = null
     try {
       out = openSync(serverLog, "a")
-      child = spawn(node, [serverEntry], {
-        cwd: repo,
+      child = spawn(launch.command, [serverEntry], {
+        cwd: projectDir,
         env: {
           ...process.env,
+          ...launch.env,
           PORT: String(port),
+          PIXEL_AGENTS_PROJECT_DIR: projectDir,
           PIXEL_AGENTS_SOURCE: "opencode",
           PIXEL_AGENTS_OPENCODE_AUTOSTART: "0",
           PIXEL_AGENTS_ATTACH: "0",
@@ -228,7 +258,9 @@ module.exports = Plugin.define({
     }
 
     const spawned = child
-    log(`spawned Pixel Agents pid=${spawned.pid} node=${node}`)
+    log(
+      `spawned Pixel Agents pid=${spawned.pid} command=${launch.command}${launch.env.ELECTRON_RUN_AS_NODE ? " (electron-as-node)" : ""}`,
+    )
     spawned.on("error", (error) => {
       log(`server process error: ${error instanceof Error ? error.message : String(error)}`)
     })
